@@ -15,13 +15,11 @@ dll_64 = winreg.QueryValueEx(key, 'SteamClientDll64')[0]
 steam_path = os.path.dirname(dll_32)
 os.environ["PATH"] += os.pathsep + steam_path
 
-dbd_path = os.path.join(steam_path, 'steamapps', 'common',
-                        'Dead by Daylight')
-steamapi_path = os.path.join(dbd_path, 'Engine', 'Binaries', 'ThirdParty',
-                             'Steamworks', 'Steamv136', 'Win64',
-                             'steam_api64.dll')
+lethal_path = os.path.join(steam_path, 'steamapps', 'common',
+                        'Lethal Company')
+steamapi_path = os.path.join(lethal_path, 'Lethal Company_Data', 'Plugins', 'x86_64', 'steam_api64.dll')
 
-os.environ['SteamAppId'] = '381210'
+os.environ['SteamAppId'] = '1966720'
 try:
     steam_api = ctypes.cdll.steam_api
     client_dll = dll_32
@@ -108,13 +106,17 @@ class Lobby:
         except KeyError:
             return default
 
-    def get_near_rank(self):
-        return self.get_int('NearRank_i')
+def get_lobbies():
+    locations = {
+        'close': 0,
+        'default': 1,
+        'far': 2,
+        'worldwide': 3
+    }
 
-def get_lobbies(slots, location):
     AddRequestLobbyListResultCountFilter(SteamMatchmaking, 500)
-    AddRequestLobbyListFilterSlotsAvailable(SteamMatchmaking, slots)
-    AddRequestLobbyListDistanceFilter(SteamMatchmaking, location)
+    AddRequestLobbyListFilterSlotsAvailable(SteamMatchmaking, 1)
+    AddRequestLobbyListDistanceFilter(SteamMatchmaking, locations['worldwide'])
     apicall = ctypes.c_ulonglong(RequestLobbyList(SteamMatchmaking))
     failed = ctypes.c_bool(False)
     while not IsAPICallCompleted(SteamUtils, apicall, ctypes.byref(failed)):
@@ -140,124 +142,13 @@ def get_lobbies(slots, location):
             lobby.data[key.value.decode('utf-8')] = value.value.decode('utf-8')
     return lobbies
 
-def send_invite(lobby_id, player):
-    InviteUserToLobby(SteamMatchmaking,
-                      ctypes.c_ulonglong(lobby_id),
-                      ctypes.c_ulonglong(player))
-
-tried = set()
-
-def send_invites(lobby_id):
-    players = []
-    with open(PLAYERS_FILE, 'rb') as fp:
-        for line in fp:
-            players.append(int(line))
-    for player in players:
-        send_invite(lobby_id, player)
-
-def find_lobby(players, location, rank):
-    lobbies = get_lobbies(players, location)
-    if rank in ('lowest', 'highest'):
-        lobbies = sorted(lobbies, key=lambda x: x.get_near_rank(),
-                         reverse=rank == 'lowest')
-    else:
-        rank = int(rank)
-        print('near test:', rank)
-        lobbies = sorted(lobbies,
-                         key=lambda x: abs(rank - x.get_near_rank()))
-    lobbies = list(lobbies)
-    print('Ranks:', [lobby.get_int('NearRank_i') for lobby in lobbies])
-
-    lobby_ret = None
-    lobby_count = 0
-    for lobby in lobbies:
-        if lobby.lobby_id in tried:
-            continue
-        lobby_count += 1
-        if lobby_ret:
-            continue
-        print('Joining "%s" game' % lobby.get('OWNINGNAME'))
-        max_rank = lobby.get_int('MaxRank_i')
-        min_rank = lobby.get_int('MinRank_i')
-        near_rank = lobby.get_near_rank()
-        print('Min, max, near ranks: %s, %s, %s' % (min_rank,
-                                                    max_rank,
-                                                    near_rank))
-        tried.add(lobby.lobby_id)
-        send_invites(lobby.lobby_id)
-        lobby_ret = lobby.lobby_id
-
-    print('Lobbies left, total: %s, %s' % (lobby_count, len(lobbies)))
-    return lobby_ret
-
-try:
-    get_input = raw_input
-except NameError:
-    get_input = input
-
 def main():
+    lobbies = get_lobbies()
+    for lobby in lobbies:
+        print(f"lobby ID: {lobby.lobby_id}")
+        print(f"  members: {lobby.members}")
+        print(f"  data: {lobby.data}")
 
-    import argparse
-
-    parser = argparse.ArgumentParser(description='Dead by Daylight lobby tool')
-    parser.add_argument('--players', type=int, default=1,
-                        help='number of slots that needs to be available')
-    parser.add_argument('--location', default='close',
-                        help='area to search in ("close", "default", "far" '
-                             'or "near")')
-    parser.add_argument('--rank', default='lowest',
-                        help='rank to sort by ("lowest", "highest", or a '
-                             'number to match a similar rank)')
-    parser.add_argument('--interactive', action='store_true',
-                        help='interactive setup of search')
-    args = parser.parse_args()
-
-    if not os.path.isfile(PLAYERS_FILE):
-        print('Missing %r file! Fill it with Steam IDs for players to invite.'
-              % PLAYERS_FILE)
-        if args.interactive:
-            get_input()
-        return
-    if os.path.getsize(PLAYERS_FILE) == 0:
-        print('Empty %r file! Fill it with Steam IDs for players to invite.'
-              % PLAYERS_FILE)
-        if args.interactive:
-            get_input()
-        return
-
-    locations = {
-        'close': 0,
-        'default': 1,
-        'far': 2,
-        'near': 3
-    }
-    if args.interactive:
-        def get_value(text):
-            while True:
-                value = get_input(text)
-                if not value.strip():
-                    continue
-                return value
-
-        players = int(get_value('Player slots needed (1-4): '))
-        location = get_value('Location (close, default, far or near): ')
-        location = locations[location]
-        rank = get_value('Rank to sort by (lowest, highest, or rank number): ')
-    else:
-        players = args.players
-        location = locations[args.location]
-        rank = args.rank
-
-    invite_loop(players, location, rank)
-
-def invite_loop(*arg, **kw):
-    last_lobby = None
-    while True:
-        if get_input("Press Enter to find lobby, or 'r' "
-                     "to resend last invite: ") == 'r':
-            send_invites(last_lobby)
-            continue
-        last_lobby = find_lobby(*arg, **kw)
 
 if __name__ == '__main__':
     main()
